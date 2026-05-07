@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CSV_PATH = path.resolve(__dirname, '../src/data/cocktails.csv');
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const CSV_PATH = resolveCSVPath();
 
 export const FILTERS = ['All', 'Bourbon', 'Rye', 'Gin', 'Vodka', 'Tequila', 'Rum', 'Wine', 'Mocktail'];
 export const SORTS = ['folio', 'name', 'base', 'glass', 'flavor'];
@@ -316,4 +316,20 @@ function slugify(value) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '');
+}
+
+function resolveCSVPath() {
+  const candidates = [
+    path.resolve(MODULE_DIR, '../src/data/cocktails.csv'),
+    path.resolve(MODULE_DIR, '../../src/data/cocktails.csv'),
+    path.resolve(process.cwd(), 'src/data/cocktails.csv'),
+    process.env.LAMBDA_TASK_ROOT ? path.resolve(process.env.LAMBDA_TASK_ROOT, 'src/data/cocktails.csv') : '',
+  ].filter(Boolean);
+
+  const found = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!found) {
+    throw new Error(`Could not find cocktails.csv. Checked: ${candidates.join(', ')}`);
+  }
+
+  return found;
 }

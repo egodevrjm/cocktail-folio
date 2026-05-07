@@ -17,5 +17,7 @@
     "react-dom": "^19.0.0",
     "vite": "^6.0.0"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@netlify/functions": "^5.2.0"
+  }
 }

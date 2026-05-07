@@ -5,6 +5,9 @@
 [build.environment]
   NODE_VERSION = "22"
 
+[functions]
+  included_files = ["src/data/cocktails.csv"]
+
 [[redirects]]
   from = "/*"
   to = "/index.html"

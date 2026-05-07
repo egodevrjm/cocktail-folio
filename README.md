@@ -53,6 +53,12 @@ Available resources:
 - `cocktails://summary`
 - `cocktails://recipe/{id}`
 
+When deployed to Netlify, the same MCP implementation is available as a remote HTTP JSON-RPC endpoint:
+
+```text
+https://cocktail-folio-room.netlify.app/.netlify/functions/mcp
+```
+
 ## Optional Services
 
 The app works locally without any keys. To enable optional services, copy `.env.example` to `.env` and fill in:
