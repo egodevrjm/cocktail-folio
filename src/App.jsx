@@ -11,19 +11,23 @@ import {
   GlassWater,
   Heart,
   Image as ImageIcon,
+  KeyRound,
   LayoutGrid,
   Loader2,
+  Lock,
   List,
   Moon,
   Pencil,
   Plus,
   Search,
   Sun,
+  Trash2,
+  Unlock,
   Upload,
   X,
 } from 'lucide-react';
 import { RAW_CSV, enrichCocktail, parseCSV } from './cocktails.js';
-import { fetchLiveRecipes, saveLiveRecipe } from './services/liveRecipes.js';
+import { deleteLiveRecipe, fetchLiveRecipes, LiveRecipeError, saveLiveRecipe } from './services/liveRecipes.js';
 import { getCocktailImage } from './services/imageStore.js';
 import { readLocalValue, writeLocalValue } from './services/localStore.js';
 
@@ -64,6 +68,7 @@ const BUILDER_INGREDIENTS = [
 const LOCAL_RECIPE_KEY = 'cocktail_folio_recipes';
 const LOCAL_FAVORITES_KEY = 'cocktail_favorites';
 const LOCAL_RECIPE_EDITS_KEY = 'cocktail_folio_recipe_edits';
+const SESSION_ADMIN_PIN_KEY = 'cocktail_folio_admin_pin';
 const PLACEHOLDER_IMAGES = {
   bourbon: '/images/placeholders/bourbon.png',
   gin: '/images/placeholders/gin.png',
@@ -82,6 +87,14 @@ export default function App() {
   const [recipeEdits, setRecipeEdits] = useState(() => readLocalValue(LOCAL_RECIPE_EDITS_KEY, {}));
   const [favorites, setFavorites] = useState(() => readLocalValue(LOCAL_FAVORITES_KEY, []));
   const [cloudStatus, setCloudStatus] = useState('local');
+  const [liveRequiresAdminPin, setLiveRequiresAdminPin] = useState(false);
+  const [adminPin, setAdminPin] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    return window.sessionStorage.getItem(SESSION_ADMIN_PIN_KEY) || '';
+  });
+  const [adminPinInput, setAdminPinInput] = useState('');
+  const [isAdminOpen, setIsAdminOpen] = useState(false);
+  const [adminMessage, setAdminMessage] = useState('');
 
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState('All');
@@ -123,9 +136,10 @@ export default function App() {
     async function loadLiveRecipes() {
       setCloudStatus('connecting');
       try {
-        const recipes = await fetchLiveRecipes();
+        const { recipes, requiresAdminPin } = await fetchLiveRecipes();
         if (cancelled) return;
         setUserCocktails(recipes);
+        setLiveRequiresAdminPin(requiresAdminPin);
         setCloudStatus('cloud');
       } catch (error) {
         if (!cancelled) console.warn('Live recipe database unavailable. Using browser storage.', error);
@@ -154,6 +168,15 @@ export default function App() {
   useEffect(() => {
     writeLocalValue(LOCAL_RECIPE_EDITS_KEY, recipeEdits);
   }, [recipeEdits]);
+
+  useEffect(() => {
+    if (!adminPin) {
+      window.sessionStorage.removeItem(SESSION_ADMIN_PIN_KEY);
+      return;
+    }
+
+    window.sessionStorage.setItem(SESSION_ADMIN_PIN_KEY, adminPin);
+  }, [adminPin]);
 
   useEffect(() => {
     let cancelled = false;
@@ -233,6 +256,7 @@ export default function App() {
 
   const favoriteCount = allCocktails.filter((cocktail) => favorites.includes(cocktail.id)).length;
   const activeSortLabel = SORT_OPTIONS.find((option) => option.value === sortBy)?.label || 'Folio order';
+  const liveAdminLocked = cloudStatus === 'cloud' && liveRequiresAdminPin && !adminPin;
 
   async function handleSaveCocktail(event) {
     event.preventDefault();
@@ -252,18 +276,29 @@ export default function App() {
     });
 
     if (editingCocktail) {
-      await saveEditedRecipe(editingCocktail, recipe);
+      const saved = await saveEditedRecipe(editingCocktail, recipe);
       setIsSaving(false);
-      resetForm();
+      if (saved) resetForm();
       return;
     }
 
     if (cloudStatus === 'cloud') {
+      if (liveRequiresAdminPin && !adminPin) {
+        setIsSaving(false);
+        openAdminUnlock('Unlock admin mode to save live recipes.');
+        return;
+      }
+
       try {
-        const savedRecipe = await saveLiveRecipe(recipe);
+        const savedRecipe = await saveLiveRecipe(recipe, adminPin);
         setUserCocktails((current) => upsertById(current, savedRecipe));
         showToast('Recipe saved to live database');
       } catch (error) {
+        if (handleAdminError(error)) {
+          setIsSaving(false);
+          return;
+        }
+
         console.warn('Live recipe save failed. Saving locally instead.', error);
         saveLocalRecipe(recipe);
       }
@@ -286,13 +321,19 @@ export default function App() {
       };
 
       if (cloudStatus === 'cloud' && cocktail.source === 'live') {
+        if (liveRequiresAdminPin && !adminPin) {
+          openAdminUnlock('Unlock admin mode to update live recipes.');
+          return false;
+        }
+
         try {
-          const savedRecipe = await saveLiveRecipe(updatedRecipe);
+          const savedRecipe = await saveLiveRecipe(updatedRecipe, adminPin);
           setUserCocktails((current) => upsertById(current, savedRecipe));
           setSelectedCocktail((current) => (current?.id === cocktail.id ? { ...current, ...savedRecipe } : current));
           showToast('Recipe updated in live database');
-          return;
+          return true;
         } catch (error) {
+          if (handleAdminError(error)) return false;
           console.warn('Live recipe update failed. Updating browser copy instead.', error);
         }
       }
@@ -300,7 +341,7 @@ export default function App() {
       setUserCocktails((current) => upsertById(current, updatedRecipe));
       setSelectedCocktail((current) => (current?.id === cocktail.id ? { ...current, ...updatedRecipe } : current));
       showToast('Recipe updated');
-      return;
+      return true;
     }
 
     const editedRecipe = {
@@ -341,6 +382,7 @@ export default function App() {
         : current,
     );
     showToast(matchesOriginal ? 'Recipe restored' : 'Recipe updated');
+    return true;
   }
 
   function saveLocalRecipe(recipe) {
@@ -351,6 +393,55 @@ export default function App() {
     };
     setUserCocktails((current) => [localRecipe, ...current]);
     showToast('Recipe saved locally');
+  }
+
+  async function handleDeleteRecipe() {
+    if (!editingCocktail) return;
+
+    if (editingCocktail.source === 'live') {
+      if (cloudStatus !== 'cloud') {
+        showToast('Live database is not connected');
+        return;
+      }
+
+      if (liveRequiresAdminPin && !adminPin) {
+        openAdminUnlock('Unlock admin mode to delete live recipes.');
+        return;
+      }
+
+      setIsSaving(true);
+      try {
+        await deleteLiveRecipe(editingCocktail.id, adminPin);
+        setUserCocktails((current) => current.filter((recipe) => recipe.id !== editingCocktail.id));
+        setSelectedCocktail(null);
+        resetForm();
+        showToast('Recipe deleted from live database');
+      } catch (error) {
+        if (!handleAdminError(error)) {
+          console.warn('Live recipe delete failed.', error);
+          showToast('Recipe could not be deleted');
+        }
+      } finally {
+        setIsSaving(false);
+      }
+      return;
+    }
+
+    if (editingCocktail.source === 'local') {
+      setUserCocktails((current) => current.filter((recipe) => recipe.id !== editingCocktail.id));
+      setSelectedCocktail(null);
+      resetForm();
+      showToast('Recipe deleted');
+      return;
+    }
+
+    setRecipeEdits((current) => {
+      const next = { ...current };
+      delete next[editingCocktail.id];
+      return next;
+    });
+    resetForm();
+    showToast('Edits cleared');
   }
 
   function handleGenerateBuilderRecipe() {
@@ -452,6 +543,41 @@ export default function App() {
     setIsCreatorOpen(false);
   }
 
+  function openAdminUnlock(message = 'Enter the admin PIN to manage live recipes.') {
+    setAdminMessage(message);
+    setAdminPinInput('');
+    setIsAdminOpen(true);
+  }
+
+  function handleAdminUnlock(event) {
+    event.preventDefault();
+    const nextPin = adminPinInput.trim();
+    if (!nextPin) return;
+
+    setAdminPin(nextPin);
+    setAdminPinInput('');
+    setIsAdminOpen(false);
+    setAdminMessage('');
+    showToast('Admin mode unlocked');
+  }
+
+  function handleAdminLock() {
+    setAdminPin('');
+    setAdminPinInput('');
+    showToast('Admin mode locked');
+  }
+
+  function handleAdminError(error) {
+    if (error instanceof LiveRecipeError && error.status === 401) {
+      setAdminPin('');
+      openAdminUnlock('That PIN did not match. Try again to manage live recipes.');
+      showToast('Admin PIN needed');
+      return true;
+    }
+
+    return false;
+  }
+
   function showToast(message) {
     setToast(message);
     window.clearTimeout(showToast.timeoutId);
@@ -481,6 +607,15 @@ export default function App() {
               <Cloud size={15} />
               {cloudStatus === 'cloud' ? 'Live Database' : cloudStatus === 'connecting' ? 'Connecting' : 'Local Library'}
             </span>
+            {cloudStatus === 'cloud' && liveRequiresAdminPin && (
+              <button
+                className={adminPin ? 'admin-button admin-button--unlocked' : 'admin-button'}
+                onClick={adminPin ? handleAdminLock : () => openAdminUnlock()}
+              >
+                {adminPin ? <Unlock size={16} /> : <Lock size={16} />}
+                <span>{adminPin ? 'Admin On' : 'Unlock'}</span>
+              </button>
+            )}
             <button className="icon-button" onClick={() => setIsDarkMode((current) => !current)} aria-label="Toggle theme">
               {isDarkMode ? <Sun size={19} /> : <Moon size={19} />}
             </button>
@@ -715,7 +850,9 @@ export default function App() {
                       ? 'Changes save to the live recipe database.'
                       : 'Changes save in this browser.'
                     : cloudStatus === 'cloud'
-                      ? 'New recipes save to the live recipe database.'
+                      ? liveAdminLocked
+                        ? 'Unlock admin mode to save new recipes to the live database.'
+                        : 'New recipes save to the live recipe database.'
                       : 'New recipes save to this browser.'}
                 </p>
               </div>
@@ -868,6 +1005,12 @@ export default function App() {
             </div>
 
             <div className="modal-footer">
+              {editingCocktail && (
+                <button className="danger-button" onClick={handleDeleteRecipe} disabled={isSaving}>
+                  <Trash2 size={18} />
+                  <span>{editingCocktail.source === 'live' || editingCocktail.source === 'local' ? 'Delete' : 'Clear Edits'}</span>
+                </button>
+              )}
               <button className="ghost-button" onClick={resetForm}>
                 Cancel
               </button>
@@ -897,6 +1040,46 @@ export default function App() {
           onEdit={(event) => openEditCocktail(event, selectedCocktail)}
           onFavorite={toggleFavorite}
         />
+      )}
+
+      {isAdminOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="admin-modal" role="dialog" aria-modal="true" aria-labelledby="admin-title">
+            <div className="modal-header">
+              <div>
+                <h2 id="admin-title">Admin Unlock</h2>
+                <p>{adminMessage || 'Enter the admin PIN to manage live recipes.'}</p>
+              </div>
+              <button className="icon-button" onClick={() => setIsAdminOpen(false)} aria-label="Close admin unlock">
+                <X size={20} />
+              </button>
+            </div>
+            <form className="admin-form" onSubmit={handleAdminUnlock}>
+              <label>
+                <span>Admin PIN</span>
+                <div className="pin-field">
+                  <KeyRound size={18} />
+                  <input
+                    autoFocus
+                    type="password"
+                    inputMode="numeric"
+                    value={adminPinInput}
+                    onChange={(event) => setAdminPinInput(event.target.value)}
+                  />
+                </div>
+              </label>
+              <div className="modal-footer">
+                <button type="button" className="ghost-button" onClick={() => setIsAdminOpen(false)}>
+                  Cancel
+                </button>
+                <button className="primary-button" type="submit" disabled={!adminPinInput.trim()}>
+                  <Unlock size={18} />
+                  <span>Unlock</span>
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
       )}
     </div>
   );

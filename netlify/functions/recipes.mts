@@ -3,6 +3,7 @@ import { getDeployStore, getStore } from '@netlify/blobs';
 
 const STORE_NAME = 'cocktail-folio-recipes';
 const RECIPE_PREFIX = 'recipes/';
+const ADMIN_PIN_HEADER = 'x-cocktail-admin-pin';
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
   'cache-control': 'no-store',
@@ -11,13 +12,17 @@ const JSON_HEADERS = {
 export default async (req: Request, context: Context) => {
   void context;
   const store = getRecipeStore();
+  const adminPin = getAdminPin();
 
   if (req.method === 'GET') {
     const recipes = await listRecipes(store);
-    return jsonResponse(200, { recipes });
+    return jsonResponse(200, { recipes, requiresAdminPin: Boolean(adminPin) });
   }
 
   if (req.method === 'POST') {
+    const unauthorized = requireAdminPin(req, adminPin);
+    if (unauthorized) return unauthorized;
+
     try {
       const recipe = normalizeRecipe(await req.json());
       await store.setJSON(recipeKey(recipe.id), recipe);
@@ -28,6 +33,9 @@ export default async (req: Request, context: Context) => {
   }
 
   if (req.method === 'DELETE') {
+    const unauthorized = requireAdminPin(req, adminPin);
+    if (unauthorized) return unauthorized;
+
     const id = new URL(req.url).searchParams.get('id');
     if (!id) return jsonResponse(400, { error: 'Recipe id is required.' });
 
@@ -50,6 +58,32 @@ function getRecipeStore() {
   }
 
   return getStore(STORE_NAME, { consistency: 'strong' });
+}
+
+function getAdminPin() {
+  type NetlifyRuntime = { env?: { get?: (name: string) => string | undefined } };
+  const runtime = (globalThis as typeof globalThis & { Netlify?: NetlifyRuntime }).Netlify;
+  return runtime?.env?.get?.('COCKTAIL_ADMIN_PIN')?.trim() || '';
+}
+
+function requireAdminPin(req: Request, adminPin: string) {
+  if (!adminPin) return null;
+
+  const providedPin = req.headers.get(ADMIN_PIN_HEADER)?.trim() || '';
+  if (pinsMatch(providedPin, adminPin)) return null;
+
+  return jsonResponse(401, { error: 'Admin PIN required.' });
+}
+
+function pinsMatch(left: string, right: string) {
+  if (left.length !== right.length) return false;
+
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+
+  return difference === 0;
 }
 
 async function listRecipes(store: ReturnType<typeof getStore>) {

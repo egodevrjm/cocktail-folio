@@ -142,6 +142,25 @@ button:disabled {
   border-color: rgb(143 240 189 / 22%);
 }
 
+.admin-button {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid rgb(255 255 255 / 13%);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 6%);
+  color: #f4d491;
+  font-weight: 820;
+}
+
+.admin-button--unlocked {
+  color: #8ff0bd;
+  background: rgb(31 139 95 / 14%);
+  border-color: rgb(143 240 189 / 22%);
+}
+
 .main {
   width: min(1180px, calc(100% - 32px));
   margin: 0 auto;
@@ -260,8 +279,10 @@ button:disabled {
 .view-toggle__button,
 .text-button,
 .ghost-button,
+.danger-button,
 .secondary-button,
 .primary-button,
+.admin-button,
 .icon-button {
   border: 0;
   transition:
@@ -784,6 +805,7 @@ button:disabled {
 
 .primary-button,
 .secondary-button,
+.danger-button,
 .ghost-button,
 .text-button {
   min-height: 42px;
@@ -809,6 +831,8 @@ button:disabled {
 .sort-option:hover,
 .view-toggle__button:hover,
 .secondary-button:hover,
+.danger-button:hover,
+.admin-button:hover,
 .ghost-button:hover,
 .text-button:hover,
 .icon-button:hover {
@@ -823,8 +847,19 @@ button:disabled {
 }
 
 .secondary-button:disabled,
-.primary-button:disabled {
+.primary-button:disabled,
+.danger-button:disabled {
   opacity: 0.55;
+}
+
+.danger-button {
+  padding: 0 15px;
+  background: color-mix(in srgb, var(--red) 13%, transparent);
+  color: var(--red);
+}
+
+.danger-button:hover {
+  background: color-mix(in srgb, var(--red) 19%, transparent);
 }
 
 .ghost-button {
@@ -890,6 +925,7 @@ button:disabled {
 }
 
 .creator-modal,
+.admin-modal,
 .mix-modal {
   width: min(100%, 920px);
   max-height: min(780px, calc(100vh - 40px));
@@ -904,6 +940,10 @@ button:disabled {
 
 .mix-modal {
   width: min(100%, 1120px);
+}
+
+.admin-modal {
+  width: min(100%, 440px);
 }
 
 .modal-header,
@@ -921,6 +961,10 @@ button:disabled {
   justify-content: flex-end;
   border-top: 1px solid var(--border);
   border-bottom: 0;
+}
+
+.modal-footer .danger-button {
+  margin-right: auto;
 }
 
 .modal-header p {
@@ -1123,13 +1167,58 @@ button:disabled {
 }
 
 .recipe-form input,
-.recipe-form textarea {
+.recipe-form textarea,
+.admin-form input {
   padding: 11px 12px;
 }
 
 .builder-panel textarea:focus,
 .recipe-form input:focus,
-.recipe-form textarea:focus {
+.recipe-form textarea:focus,
+.admin-form input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.admin-form {
+  display: grid;
+  gap: 18px;
+}
+
+.admin-form > label {
+  display: grid;
+  gap: 8px;
+  padding: 22px 22px 0;
+}
+
+.admin-form > label > span {
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 780;
+}
+
+.pin-field {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.pin-field svg {
+  color: var(--accent-strong);
+}
+
+.pin-field input {
+  border: 0;
+  padding-left: 0;
+  background: transparent;
+}
+
+.pin-field:focus-within {
   border-color: var(--accent);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
 }
@@ -1513,6 +1602,7 @@ button:disabled {
   }
 
   .creator-modal,
+  .admin-modal,
   .mix-modal {
     max-height: calc(100vh - 20px);
   }
