@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowUpDown,
   BookOpen,
@@ -17,20 +17,14 @@ import {
   Moon,
   Pencil,
   Plus,
-  RefreshCw,
   Search,
   Sun,
-  Wand2,
+  Upload,
   X,
 } from 'lucide-react';
 import { RAW_CSV, enrichCocktail, parseCSV } from './cocktails.js';
-import {
-  generateCocktail,
-  generateCocktailImage,
-  getAIProviderLabel,
-} from './services/ai.js';
-import { createFirebaseClient } from './services/firebaseCocktails.js';
-import { getCocktailImage, saveCocktailImage } from './services/imageStore.js';
+import { fetchLiveRecipes, saveLiveRecipe } from './services/liveRecipes.js';
+import { getCocktailImage } from './services/imageStore.js';
 import { readLocalValue, writeLocalValue } from './services/localStore.js';
 
 const FILTERS = ['All', 'Bourbon', 'Rye', 'Gin', 'Vodka', 'Tequila', 'Rum', 'Wine', 'Mocktail'];
@@ -87,8 +81,6 @@ export default function App() {
   const [userCocktails, setUserCocktails] = useState(() => readLocalValue(LOCAL_RECIPE_KEY, []));
   const [recipeEdits, setRecipeEdits] = useState(() => readLocalValue(LOCAL_RECIPE_EDITS_KEY, {}));
   const [favorites, setFavorites] = useState(() => readLocalValue(LOCAL_FAVORITES_KEY, []));
-  const [user, setUser] = useState(null);
-  const [cloudClient, setCloudClient] = useState(null);
   const [cloudStatus, setCloudStatus] = useState('local');
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -104,7 +96,6 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
   const [cocktailImage, setCocktailImage] = useState(null);
-  const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [imageStatus, setImageStatus] = useState('');
   const [imageError, setImageError] = useState('');
   const [isDarkMode, setIsDarkMode] = useState(() => {
@@ -117,68 +108,36 @@ export default function App() {
   const [newMethod, setNewMethod] = useState('');
   const [newGlass, setNewGlass] = useState('');
   const [newFlavorProfile, setNewFlavorProfile] = useState('');
+  const [newImageDataUrl, setNewImageDataUrl] = useState('');
+  const [imageUploadName, setImageUploadName] = useState('');
   const [isSaving, setIsSaving] = useState(false);
-  const [aiPrompt, setAiPrompt] = useState('');
   const [builderBase, setBuilderBase] = useState('Bourbon');
   const [builderProfile, setBuilderProfile] = useState('Citrus sour');
   const [builderIngredients, setBuilderIngredients] = useState(['Lemon juice', 'Honey']);
   const [builderNotes, setBuilderNotes] = useState('');
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [aiError, setAiError] = useState('');
-  const imageAbortRef = useRef(null);
+  const [builderMessage, setBuilderMessage] = useState('');
 
   useEffect(() => {
-    let unsubscribeAuth;
+    let cancelled = false;
 
-    async function bootCloud() {
-      const client = await createFirebaseClient();
-      if (!client) return;
-
-      setCloudClient(client);
+    async function loadLiveRecipes() {
       setCloudStatus('connecting');
       try {
-        await client.signInAnonymously(client.auth);
-        unsubscribeAuth = client.onAuthStateChanged(client.auth, (currentUser) => {
-          setUser(currentUser);
-          setCloudStatus(currentUser ? 'cloud' : 'local');
-        });
+        const recipes = await fetchLiveRecipes();
+        if (cancelled) return;
+        setUserCocktails(recipes);
+        setCloudStatus('cloud');
       } catch (error) {
-        console.warn('Cloud sign-in failed. Local mode remains available.', error);
+        if (!cancelled) console.warn('Live recipe database unavailable. Using browser storage.', error);
         setCloudStatus('local');
       }
     }
 
-    bootCloud();
-    return () => unsubscribeAuth?.();
+    loadLiveRecipes();
+    return () => {
+      cancelled = true;
+    };
   }, []);
-
-  useEffect(() => {
-    if (!cloudClient || !user) return undefined;
-
-    const collectionRef = cloudClient.collection(
-      cloudClient.db,
-      'artifacts',
-      cloudClient.appId,
-      'users',
-      user.uid,
-      'cocktails',
-    );
-
-    return cloudClient.onSnapshot(
-      collectionRef,
-      (snapshot) => {
-        const recipes = snapshot.docs
-          .map((doc) => ({ id: doc.id, ...doc.data(), source: 'cloud' }))
-          .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-
-        setUserCocktails(recipes);
-      },
-      (error) => {
-        console.warn('Cloud recipe listener failed. Keeping local recipes.', error);
-        setCloudStatus('local');
-      },
-    );
-  }, [cloudClient, user]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = isDarkMode ? 'dark' : 'light';
@@ -210,7 +169,15 @@ export default function App() {
       setCocktailImage(null);
       setImageStatus('');
       setImageError('');
-      setIsGeneratingImage(false);
+
+      if (selectedCocktail.ImageDataUrl) {
+        setCocktailImage({
+          cocktailId: selectedCocktail.id,
+          cocktailName: selectedCocktail.Name,
+          dataUrl: selectedCocktail.ImageDataUrl,
+        });
+        return;
+      }
 
       try {
         const savedImage = await getCocktailImage(selectedCocktail.id);
@@ -273,35 +240,31 @@ export default function App() {
 
     setIsSaving(true);
     const recipe = enrichCocktail({
+      id: editingCocktail?.id,
       Name: newName.trim(),
       Ingredients: normalizeIngredients(newIngredients),
       Method: newMethod.trim(),
       Glass: newGlass.trim(),
       FlavorProfile: newFlavorProfile.trim(),
-      createdAt: new Date().toISOString(),
+      ImageDataUrl: newImageDataUrl,
+      source: editingCocktail?.source,
+      createdAt: editingCocktail?.createdAt || new Date().toISOString(),
     });
 
     if (editingCocktail) {
-      saveEditedRecipe(editingCocktail, recipe);
+      await saveEditedRecipe(editingCocktail, recipe);
       setIsSaving(false);
       resetForm();
       return;
     }
 
-    if (cloudClient && user && cloudStatus === 'cloud') {
+    if (cloudStatus === 'cloud') {
       try {
-        const collectionRef = cloudClient.collection(
-          cloudClient.db,
-          'artifacts',
-          cloudClient.appId,
-          'users',
-          user.uid,
-          'cocktails',
-        );
-        await cloudClient.addDoc(collectionRef, recipe);
-        showToast('Recipe saved to cloud');
+        const savedRecipe = await saveLiveRecipe(recipe);
+        setUserCocktails((current) => upsertById(current, savedRecipe));
+        showToast('Recipe saved to live database');
       } catch (error) {
-        console.warn('Cloud save failed. Saving locally instead.', error);
+        console.warn('Live recipe save failed. Saving locally instead.', error);
         saveLocalRecipe(recipe);
       }
     } else {
@@ -312,13 +275,41 @@ export default function App() {
     resetForm();
   }
 
-  function saveEditedRecipe(cocktail, recipe) {
+  async function saveEditedRecipe(cocktail, recipe) {
+    if (cocktail.source === 'live' || cocktail.source === 'local') {
+      const updatedRecipe = {
+        ...cocktail,
+        ...recipe,
+        id: cocktail.id,
+        source: cocktail.source,
+        updatedAt: new Date().toISOString(),
+      };
+
+      if (cloudStatus === 'cloud' && cocktail.source === 'live') {
+        try {
+          const savedRecipe = await saveLiveRecipe(updatedRecipe);
+          setUserCocktails((current) => upsertById(current, savedRecipe));
+          setSelectedCocktail((current) => (current?.id === cocktail.id ? { ...current, ...savedRecipe } : current));
+          showToast('Recipe updated in live database');
+          return;
+        } catch (error) {
+          console.warn('Live recipe update failed. Updating browser copy instead.', error);
+        }
+      }
+
+      setUserCocktails((current) => upsertById(current, updatedRecipe));
+      setSelectedCocktail((current) => (current?.id === cocktail.id ? { ...current, ...updatedRecipe } : current));
+      showToast('Recipe updated');
+      return;
+    }
+
     const editedRecipe = {
       Name: recipe.Name,
       Ingredients: recipe.Ingredients,
       Method: recipe.Method,
       Glass: recipe.Glass,
       FlavorProfile: recipe.FlavorProfile,
+      ImageDataUrl: recipe.ImageDataUrl,
       editedAt: new Date().toISOString(),
     };
 
@@ -328,7 +319,8 @@ export default function App() {
       originalRecipe.Ingredients === editedRecipe.Ingredients &&
       originalRecipe.Method === editedRecipe.Method &&
       originalRecipe.Glass === editedRecipe.Glass &&
-      originalRecipe.FlavorProfile === editedRecipe.FlavorProfile;
+      originalRecipe.FlavorProfile === editedRecipe.FlavorProfile &&
+      (originalRecipe.ImageDataUrl || '') === (editedRecipe.ImageDataUrl || '');
 
     setRecipeEdits((current) => {
       if (!matchesOriginal) {
@@ -361,75 +353,21 @@ export default function App() {
     showToast('Recipe saved locally');
   }
 
-  async function handleGenerateRecipe() {
-    if (!aiPrompt.trim()) return;
-    setIsGenerating(true);
-    setAiError('');
-
-    try {
-      const recipe = await generateCocktail(aiPrompt.trim());
-      setNewName(recipe.name);
-      setNewIngredients(recipe.ingredients.split(';').map((ingredient) => ingredient.trim()).join(';\n'));
-      setNewMethod(recipe.method);
-      const enrichedRecipe = enrichCocktail({
-        Name: recipe.name,
-        Ingredients: recipe.ingredients,
-        Method: recipe.method,
-        Glass: recipe.glass,
-        FlavorProfile: recipe.flavorProfile,
-      });
-      setNewGlass(enrichedRecipe.Glass);
-      setNewFlavorProfile(enrichedRecipe.FlavorProfile);
-      setAiPrompt('');
-      showToast(`${getAIProviderLabel()} recipe generated`);
-    } catch (error) {
-      console.warn(error);
-      setAiError('Could not generate a recipe right now. Try a shorter prompt.');
-    } finally {
-      setIsGenerating(false);
-    }
-  }
-
-  async function handleGenerateBuilderRecipe() {
+  function handleGenerateBuilderRecipe() {
     if (!builderBase || builderIngredients.length === 0) return;
-    setIsGenerating(true);
-    setAiError('');
-
-    const noAlcohol = builderBase === 'No alcohol';
-    const prompt = [
-      noAlcohol
-        ? 'Create a zero-proof cocktail with no alcohol, no spirits, no liqueurs, and no wine.'
-        : `Create a cocktail built around ${builderBase}.`,
-      `Flavor profile: ${builderProfile}.`,
-      `Use or harmonize these ingredients: ${builderIngredients.join(', ')}.`,
-      builderNotes.trim() ? `House notes: ${builderNotes.trim()}.` : '',
-      'Return a balanced original recipe with a creative name, precise measurements, appropriate glassware, flavor details, garnish cues, and concise bartender method.',
-      'Ingredients must be semicolon-separated.',
-    ]
-      .filter(Boolean)
-      .join(' ');
-
-    try {
-      const recipe = await generateCocktail(prompt);
-      setNewName(recipe.name);
-      setNewIngredients(recipe.ingredients.split(';').map((ingredient) => ingredient.trim()).join(';\n'));
-      setNewMethod(recipe.method);
-      const enrichedRecipe = enrichCocktail({
-        Name: recipe.name,
-        Ingredients: recipe.ingredients,
-        Method: recipe.method,
-        Glass: recipe.glass,
-        FlavorProfile: recipe.flavorProfile || builderProfile,
-      });
-      setNewGlass(enrichedRecipe.Glass);
-      setNewFlavorProfile(enrichedRecipe.FlavorProfile);
-      showToast(`${getAIProviderLabel()} builder recipe generated`);
-    } catch (error) {
-      console.warn(error);
-      setAiError('Could not build that recipe right now. Try fewer ingredients or a simpler profile.');
-    } finally {
-      setIsGenerating(false);
-    }
+    const recipe = buildRecipeFromSelections({
+      base: builderBase,
+      profile: builderProfile,
+      ingredients: builderIngredients,
+      notes: builderNotes,
+    });
+    setNewName(recipe.Name);
+    setNewIngredients(recipe.Ingredients.split(';').map((ingredient) => ingredient.trim()).join(';\n'));
+    setNewMethod(recipe.Method);
+    setNewGlass(recipe.Glass);
+    setNewFlavorProfile(recipe.FlavorProfile);
+    setBuilderMessage('Draft filled. Adjust anything you like before saving.');
+    showToast('Recipe draft built');
   }
 
   function toggleBuilderIngredient(ingredient) {
@@ -438,51 +376,21 @@ export default function App() {
     );
   }
 
-  async function handleGenerateCocktailImage(cocktail, options = {}) {
-    const { isCancelled = () => false, silent = false } = options;
-    imageAbortRef.current?.abort();
-    const controller = new AbortController();
-    imageAbortRef.current = controller;
-
-    setIsGeneratingImage(true);
-    setImageStatus('Calling Nano Banana');
-    setImageError('');
+  async function handleImageUpload(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
 
     try {
-      const generatedImage = await generateCocktailImage(cocktail, { signal: controller.signal });
-      if (isCancelled()) return;
-
-      setImageStatus('Saving image locally');
-      const imageRecord = await saveCocktailImage({
-        cocktailId: cocktail.id,
-        cocktailName: cocktail.Name,
-        createdAt: new Date().toISOString(),
-        ...generatedImage,
-      });
-
-      if (isCancelled()) return;
-      setCocktailImage(imageRecord);
-      setImageStatus('Image ready');
-      if (!silent) showToast('Image generated and saved');
+      const dataUrl = await resizeImageFile(file);
+      setNewImageDataUrl(dataUrl);
+      setImageUploadName(file.name);
+      showToast('Image attached');
     } catch (error) {
-      if (isCancelled()) return;
-
-      if (error?.name !== 'AbortError') console.warn(error);
-      setImageStatus('');
-      setImageError(getImageGenerationErrorMessage(error));
-      if (!silent) showToast('Image generation failed');
+      console.warn(error);
+      showToast('Image could not be loaded');
     } finally {
-      if (imageAbortRef.current === controller) imageAbortRef.current = null;
-      if (!isCancelled()) setIsGeneratingImage(false);
+      event.target.value = '';
     }
-  }
-
-  function handleCancelImageGeneration() {
-    imageAbortRef.current?.abort();
-    imageAbortRef.current = null;
-    setIsGeneratingImage(false);
-    setImageStatus('');
-    setImageError('Image generation cancelled.');
   }
 
   function toggleFavorite(event, id) {
@@ -514,9 +422,6 @@ export default function App() {
 
   function openEditCocktail(event, cocktail) {
     event?.stopPropagation();
-    imageAbortRef.current?.abort();
-    imageAbortRef.current = null;
-    setIsGeneratingImage(false);
     setSelectedCocktail(null);
     setEditingCocktail(cocktail);
     setNewName(cocktail.Name || '');
@@ -524,15 +429,13 @@ export default function App() {
     setNewMethod(cocktail.Method || '');
     setNewGlass(cocktail.Glass || '');
     setNewFlavorProfile(cocktail.FlavorProfile || '');
-    setAiPrompt('');
-    setAiError('');
+    setNewImageDataUrl(cocktail.ImageDataUrl || '');
+    setImageUploadName(cocktail.ImageDataUrl ? 'Current image' : '');
+    setBuilderMessage('');
     setIsCreatorOpen(true);
   }
 
   function closeMixingMode() {
-    imageAbortRef.current?.abort();
-    imageAbortRef.current = null;
-    setIsGeneratingImage(false);
     setSelectedCocktail(null);
   }
 
@@ -542,9 +445,10 @@ export default function App() {
     setNewMethod('');
     setNewGlass('');
     setNewFlavorProfile('');
+    setNewImageDataUrl('');
+    setImageUploadName('');
     setEditingCocktail(null);
-    setAiPrompt('');
-    setAiError('');
+    setBuilderMessage('');
     setIsCreatorOpen(false);
   }
 
@@ -575,7 +479,7 @@ export default function App() {
           <div className="topbar__actions">
             <span className={`sync-pill sync-pill--${cloudStatus}`}>
               <Cloud size={15} />
-              {cloudStatus === 'cloud' ? 'Cloud Sync' : cloudStatus === 'connecting' ? 'Connecting' : 'Local Library'}
+              {cloudStatus === 'cloud' ? 'Live Database' : cloudStatus === 'connecting' ? 'Connecting' : 'Local Library'}
             </span>
             <button className="icon-button" onClick={() => setIsDarkMode((current) => !current)} aria-label="Toggle theme">
               {isDarkMode ? <Sun size={19} /> : <Moon size={19} />}
@@ -734,7 +638,7 @@ export default function App() {
         <section className={`recipe-grid recipe-grid--${viewMode}`} aria-label="Cocktail recipes">
           {filteredCocktails.map((cocktail) => (
             <article className="recipe-card" key={cocktail.id} onClick={() => openMixingMode(cocktail)}>
-              {(cocktail.createdAt || cocktail.source === 'cloud' || cocktail.source === 'local' || cocktail.isEdited) && (
+              {(cocktail.createdAt || cocktail.source === 'live' || cocktail.source === 'local' || cocktail.isEdited) && (
                 <span className="recipe-card__badge">{cocktail.isEdited ? 'Edited' : 'My Recipe'}</span>
               )}
               <RecipeCardImage cocktail={cocktail} />
@@ -807,9 +711,11 @@ export default function App() {
                 <h2 id="creator-title">{editingCocktail ? 'Edit Cocktail' : 'Cocktail Creator'}</h2>
                 <p>
                   {editingCocktail
-                    ? 'Changes save locally in this browser.'
+                    ? editingCocktail.source === 'live'
+                      ? 'Changes save to the live recipe database.'
+                      : 'Changes save in this browser.'
                     : cloudStatus === 'cloud'
-                      ? 'New recipes sync to your cloud library.'
+                      ? 'New recipes save to the live recipe database.'
                       : 'New recipes save to this browser.'}
                 </p>
               </div>
@@ -820,10 +726,10 @@ export default function App() {
 
             <div className={editingCocktail ? 'creator-grid creator-grid--edit' : 'creator-grid'}>
               {!editingCocktail && (
-              <section className="ai-panel">
+              <section className="builder-panel">
                 <div className="section-title">
-                  <Wand2 size={19} />
-                  <h3>Cocktail Builder</h3>
+                  <GlassWater size={19} />
+                  <h3>Recipe Builder</h3>
                 </div>
                 <div className="builder-stack">
                   <div className="builder-section">
@@ -885,32 +791,14 @@ export default function App() {
 
                   <button
                     className="secondary-button"
-                    disabled={isGenerating || !builderBase || builderIngredients.length === 0}
+                    disabled={!builderBase || builderIngredients.length === 0}
                     onClick={handleGenerateBuilderRecipe}
                   >
-                    {isGenerating ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}
-                    <span>{isGenerating ? 'Building' : 'Build Cocktail'}</span>
+                    <GlassWater size={18} />
+                    <span>Build Draft</span>
                   </button>
                 </div>
-
-                <div className="builder-divider">
-                  <span>or</span>
-                </div>
-
-                <p>
-                  Describe a drink directly and let the current AI provider draft it.
-                </p>
-                <textarea
-                  rows="4"
-                  placeholder="A smoky, spicy tequila drink for a summer afternoon..."
-                  value={aiPrompt}
-                  onChange={(event) => setAiPrompt(event.target.value)}
-                />
-                <button className="secondary-button" disabled={isGenerating || !aiPrompt.trim()} onClick={handleGenerateRecipe}>
-                  {isGenerating ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}
-                  <span>{isGenerating ? 'Mixing' : 'Generate Recipe'}</span>
-                </button>
-                {aiError && <p className="form-error">{aiError}</p>}
+                {builderMessage && <p className="form-note">{builderMessage}</p>}
               </section>
               )}
 
@@ -957,6 +845,25 @@ export default function App() {
                     />
                   </label>
                 </div>
+                <label className="image-upload-field">
+                  <span>Recipe image</span>
+                  <input type="file" accept="image/*" onChange={handleImageUpload} />
+                  <div className="image-upload-control">
+                    <Upload size={18} />
+                    <strong>{imageUploadName || 'Upload a square-ish photo'}</strong>
+                  </div>
+                </label>
+                {newImageDataUrl && (
+                  <div className="image-upload-preview">
+                    <img src={newImageDataUrl} alt="Uploaded recipe preview" />
+                    <button type="button" className="ghost-button" onClick={() => {
+                      setNewImageDataUrl('');
+                      setImageUploadName('');
+                    }}>
+                      Remove Image
+                    </button>
+                  </div>
+                )}
               </form>
             </div>
 
@@ -984,14 +891,11 @@ export default function App() {
           placeholderLabel={getPlaceholderLabel(selectedCocktail)}
           imageError={imageError}
           imageStatus={imageStatus}
-          isGeneratingImage={isGeneratingImage}
           onCheck={setCheckedIngredients}
           onClose={closeMixingMode}
-          onCancelImage={handleCancelImageGeneration}
           onCopy={handleCopy}
           onEdit={(event) => openEditCocktail(event, selectedCocktail)}
           onFavorite={toggleFavorite}
-          onGenerateImage={() => handleGenerateCocktailImage(selectedCocktail)}
         />
       )}
     </div>
@@ -1008,21 +912,18 @@ function MixingModal({
   placeholderLabel,
   imageError,
   imageStatus,
-  isGeneratingImage,
   onCheck,
-  onCancelImage,
   onClose,
   onCopy,
   onEdit,
   onFavorite,
-  onGenerateImage,
 }) {
   const ingredients = splitIngredients(cocktail.Ingredients);
   const complete = checkedIngredients.length === ingredients.length;
   const generatedImageSrc = useImageSource(cocktailImage);
   const displayImageSrc = generatedImageSrc || placeholderImageSrc;
   const imageAlt = cocktailImage
-    ? `${cocktail.Name} generated by Nano Banana`
+    ? `${cocktail.Name} uploaded cocktail image`
     : `${placeholderLabel} cocktail placeholder`;
 
   return (
@@ -1070,19 +971,12 @@ function MixingModal({
               <img src={displayImageSrc} alt={imageAlt} />
               {!cocktailImage && (
                 <span className="holding-label">
-                  {isGeneratingImage ? imageStatus || 'Creating recipe image' : `${placeholderLabel} placeholder`}
+                  {`${placeholderLabel} placeholder`}
                 </span>
               )}
             </div>
             {imageStatus && <p className="image-status">{imageStatus}</p>}
             {imageError && <p className="image-error">{imageError}</p>}
-            <button
-              className={isGeneratingImage ? 'ghost-button image-action image-action--cancel' : 'secondary-button image-action'}
-              onClick={isGeneratingImage ? onCancelImage : onGenerateImage}
-            >
-              {isGeneratingImage ? <X size={18} /> : <RefreshCw size={18} />}
-              <span>{isGeneratingImage ? 'Cancel' : cocktailImage ? 'Regenerate' : 'Generate Image'}</span>
-            </button>
           </section>
 
           <section>
@@ -1155,12 +1049,23 @@ function RecipeCardImage({ cocktail }) {
   const [imageRecord, setImageRecord] = useState(null);
   const generatedImageSrc = useImageSource(imageRecord);
   const displayImageSrc = generatedImageSrc || getPlaceholderImageSrc(cocktail);
-  const label = generatedImageSrc ? `${cocktail.Name} generated cocktail image` : `${getPlaceholderLabel(cocktail)} cocktail placeholder`;
+  const label = generatedImageSrc ? `${cocktail.Name} cocktail image` : `${getPlaceholderLabel(cocktail)} cocktail placeholder`;
 
   useEffect(() => {
     let cancelled = false;
 
     setImageRecord(null);
+    if (cocktail.ImageDataUrl) {
+      setImageRecord({
+        cocktailId: cocktail.id,
+        cocktailName: cocktail.Name,
+        dataUrl: cocktail.ImageDataUrl,
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+
     getCocktailImage(cocktail.id)
       .then((savedImage) => {
         if (!cancelled) setImageRecord(savedImage || null);
@@ -1172,7 +1077,7 @@ function RecipeCardImage({ cocktail }) {
     return () => {
       cancelled = true;
     };
-  }, [cocktail.id]);
+  }, [cocktail.id, cocktail.ImageDataUrl, cocktail.Name]);
 
   return (
     <div className={generatedImageSrc ? 'recipe-card__image' : 'recipe-card__image recipe-card__image--placeholder'}>
@@ -1345,28 +1250,128 @@ function useImageSource(imageRecord) {
   return imageSource;
 }
 
-function getImageGenerationErrorMessage(error) {
-  if (error?.name === 'AbortError') {
-    return 'Nano Banana took too long or was cancelled. Try again in a moment.';
+function buildRecipeFromSelections({ base, profile, ingredients, notes }) {
+  const zeroProof = base === 'No alcohol';
+  const normalizedText = `${base} ${profile} ${ingredients.join(' ')} ${notes}`.toLowerCase();
+  const citrus = pickIngredient(normalizedText, {
+    lemon: 'Lemon juice',
+    lime: 'Lime juice',
+    grapefruit: 'Grapefruit juice',
+    orange: 'Blood orange juice',
+  }, ['Lemon juice', 'Lime juice', 'Grapefruit juice']);
+  const sweetener = pickIngredient(normalizedText, {
+    honey: 'Honey syrup',
+    agave: 'Agave nectar',
+    maple: 'Maple syrup',
+    pear: 'Pear syrup',
+  }, ['Honey syrup', 'Simple syrup', 'Agave nectar']);
+  const lengthener = pickIngredient(normalizedText, {
+    ginger: 'Ginger beer',
+    tonic: 'Tonic water',
+    club: 'Club soda',
+    sparkling: 'Sparkling water',
+    coffee: 'Cold brew coffee',
+  }, zeroProof ? ['Ginger beer', 'Tonic water', 'Sparkling water'] : ['Ginger beer', 'Club soda', 'Tonic water']);
+  const garnish = pickIngredient(normalizedText, {
+    rosemary: 'Rosemary sprig',
+    mint: 'Mint sprig',
+    basil: 'Basil leaf',
+    cucumber: 'Cucumber ribbon',
+    cherry: 'Brandied cherry',
+    smoked: 'Smoked salt rim',
+  }, ['Citrus peel', 'Mint sprig', 'Thin lime wheel']);
+  const spirit = zeroProof ? '' : normalizeBuilderBase(base);
+  const accent = ingredients.find((ingredient) => ![citrus, sweetener, lengthener].some((value) => ingredient.toLowerCase().includes(value.toLowerCase().split(' ')[0])));
+  const name = makeBuilderName(profile, spirit || lengthener, accent);
+  const glass = lengthener.includes('beer') || lengthener.includes('soda') || lengthener.includes('tonic') || zeroProof ? 'Highball' : 'Rocks glass';
+
+  if (zeroProof) {
+    return enrichCocktail({
+      Name: name,
+      Ingredients: `1 oz ${citrus}; 1/2 oz ${sweetener}; 4 oz ${lengthener}; ${garnish}`,
+      Method: `Build ${citrus.toLowerCase()} and ${sweetener.toLowerCase()} over ice. Top with ${lengthener.toLowerCase()} and garnish with ${garnish.toLowerCase()}.`,
+      Glass: glass,
+      FlavorProfile: profile,
+    });
   }
 
-  if (error?.status === 503) {
-    return 'Nano Banana is busy right now. Try again in a minute.';
-  }
+  return enrichCocktail({
+    Name: name,
+    Ingredients: `2 oz ${spirit}; 3/4 oz ${citrus}; 1/2 oz ${sweetener}; 2 oz ${lengthener}; ${garnish}`,
+    Method: `Shake ${spirit.toLowerCase()}, ${citrus.toLowerCase()}, and ${sweetener.toLowerCase()} with ice. Strain over fresh ice, top with ${lengthener.toLowerCase()}, and garnish with ${garnish.toLowerCase()}.`,
+    Glass: glass,
+    FlavorProfile: profile,
+  });
+}
 
-  if (error?.status === 429) {
-    return 'Gemini is rate limiting image generation. Wait a bit, then try again.';
-  }
+function normalizeBuilderBase(base) {
+  if (base.includes('Rye')) return 'Rye Whiskey';
+  if (base.includes('Tequila')) return 'Blanco Tequila';
+  if (base.includes('Rum')) return 'Dark Rum';
+  if (base.includes('Rosé')) return 'Estate Rosé';
+  return base;
+}
 
-  if (error?.status === 400 || error?.status === 404) {
-    return 'The Gemini image model name or request was rejected. Check VITE_GEMINI_IMAGE_MODEL.';
-  }
+function makeBuilderName(profile, base, accent) {
+  const prefix = {
+    'Citrus sour': 'Bright',
+    Smoky: 'Ember',
+    Bittersweet: 'Late Hour',
+    'Botanical fresh': 'Garden',
+    'Fruity bright': 'Sunset',
+    'Spiced ginger': 'Spiced',
+    'Coffee rich': 'Nocturne',
+    'Creamy dessert': 'Velvet',
+  }[profile] || 'House';
+  const baseName = base.replace(' Whiskey', '').replace('Blanco ', '').replace('Dark ', '').replace('Estate ', '');
+  const accentName = accent ? accent.split(' ')[0] : baseName;
+  return `${prefix} ${accentName}`;
+}
 
-  if (error?.status === 401 || error?.status === 403) {
-    return 'The Gemini key does not have access to this image model.';
-  }
+function pickIngredient(text, matches, fallback) {
+  const found = Object.entries(matches).find(([term]) => text.includes(term));
+  if (found) return found[1];
 
-  return 'Image generation failed. Check your Gemini key, image model, and API access.';
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash + text.charCodeAt(index) * (index + 1)) % 1000;
+  }
+  return fallback[hash % fallback.length];
+}
+
+async function resizeImageFile(file) {
+  if (!file.type.startsWith('image/')) throw new Error('Not an image file.');
+  const image = await loadImage(file);
+  const canvas = document.createElement('canvas');
+  const maxSize = 1000;
+  const scale = Math.min(1, maxSize / Math.max(image.width, image.height));
+  canvas.width = Math.max(1, Math.round(image.width * scale));
+  canvas.height = Math.max(1, Math.round(image.height * scale));
+  const context = canvas.getContext('2d');
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', 0.82);
+}
+
+function loadImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Image failed to load.'));
+    };
+    image.src = url;
+  });
+}
+
+function upsertById(items, item) {
+  const exists = items.some((current) => current.id === item.id);
+  if (!exists) return [item, ...items];
+  return items.map((current) => (current.id === item.id ? item : current));
 }
 
 function getPlaceholderImageSrc(cocktail) {
