@@ -17,6 +17,42 @@ Open `http://localhost:5184/`.
 npm run build
 ```
 
+## MCP Server
+
+The project also includes a local MCP server that exposes the cocktail library to MCP clients.
+
+```bash
+npm run mcp
+```
+
+Example MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "cocktail-folio": {
+      "command": "node",
+      "args": ["mcp/server.js"],
+      "cwd": "/Users/ryanmorrison/Documents/Codex/2026-05-03/can-we-build-this-as-a"
+    }
+  }
+}
+```
+
+Available tools:
+
+- `search_cocktails`: search by name, ingredient, glass, flavor, or base filter.
+- `get_cocktail`: fetch a complete recipe by id or name.
+- `library_summary`: return counts, filters, sorts, and coverage.
+- `build_cocktail`: create a local deterministic cocktail draft.
+- `image_prompt`: generate the app's square photorealistic cocktail image prompt.
+
+Available resources:
+
+- `cocktails://library`
+- `cocktails://summary`
+- `cocktails://recipe/{id}`
+
 ## Optional Services
 
 The app works locally without any keys. To enable optional services, copy `.env.example` to `.env` and fill in:
