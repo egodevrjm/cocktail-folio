@@ -1,9 +1,11 @@
 import type { Config, Context } from '@netlify/functions';
 import { getDeployStore, getStore } from '@netlify/blobs';
+import { createHash } from 'node:crypto';
 
 const STORE_NAME = 'cocktail-folio-recipes';
 const RECIPE_PREFIX = 'recipes/';
 const ADMIN_PIN_HEADER = 'x-cocktail-admin-pin';
+const FALLBACK_ADMIN_PIN_SHA256 = '57e7efdb1e3ab291da53352c4408a69794252d6aba9826a4679710fb7974e4e4';
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
   'cache-control': 'no-store',
@@ -12,15 +14,15 @@ const JSON_HEADERS = {
 export default async (req: Request, context: Context) => {
   void context;
   const store = getRecipeStore();
-  const adminPin = getAdminPin();
+  const adminSecret = getAdminSecret();
 
   if (req.method === 'GET') {
     const recipes = await listRecipes(store);
-    return jsonResponse(200, { recipes, requiresAdminPin: Boolean(adminPin) });
+    return jsonResponse(200, { recipes, requiresAdminPin: Boolean(adminSecret.pin || adminSecret.pinHash) });
   }
 
   if (req.method === 'POST') {
-    const unauthorized = requireAdminPin(req, adminPin);
+    const unauthorized = requireAdminPin(req, adminSecret);
     if (unauthorized) return unauthorized;
 
     try {
@@ -33,7 +35,7 @@ export default async (req: Request, context: Context) => {
   }
 
   if (req.method === 'DELETE') {
-    const unauthorized = requireAdminPin(req, adminPin);
+    const unauthorized = requireAdminPin(req, adminSecret);
     if (unauthorized) return unauthorized;
 
     const id = new URL(req.url).searchParams.get('id');
@@ -60,19 +62,27 @@ function getRecipeStore() {
   return getStore(STORE_NAME, { consistency: 'strong' });
 }
 
-function getAdminPin() {
+function getAdminSecret() {
   type NetlifyRuntime = { env?: { get?: (name: string) => string | undefined } };
   const runtime = (globalThis as typeof globalThis & { Netlify?: NetlifyRuntime }).Netlify;
-  return runtime?.env?.get?.('COCKTAIL_ADMIN_PIN')?.trim() || process.env.COCKTAIL_ADMIN_PIN?.trim() || '';
+  return {
+    pin: runtime?.env?.get?.('COCKTAIL_ADMIN_PIN')?.trim() || process.env.COCKTAIL_ADMIN_PIN?.trim() || '',
+    pinHash: FALLBACK_ADMIN_PIN_SHA256,
+  };
 }
 
-function requireAdminPin(req: Request, adminPin: string) {
-  if (!adminPin) return null;
+function requireAdminPin(req: Request, adminSecret: { pin: string; pinHash: string }) {
+  if (!adminSecret.pin && !adminSecret.pinHash) return null;
 
   const providedPin = req.headers.get(ADMIN_PIN_HEADER)?.trim() || '';
-  if (pinsMatch(providedPin, adminPin)) return null;
+  if (adminSecret.pin && pinsMatch(providedPin, adminSecret.pin)) return null;
+  if (!adminSecret.pin && adminSecret.pinHash && pinsMatch(hashPin(providedPin), adminSecret.pinHash)) return null;
 
   return jsonResponse(401, { error: 'Admin PIN required.' });
+}
+
+function hashPin(pin: string) {
+  return createHash('sha256').update(pin).digest('hex');
 }
 
 function pinsMatch(left: string, right: string) {

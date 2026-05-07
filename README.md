@@ -65,6 +65,6 @@ The app no longer uses AI services or browser-exposed API keys. Recipe creation 
 
 On Netlify, custom recipes are stored with Netlify Blobs through the `/api/recipes` function. Uploaded recipe images are resized in the browser before being saved with the recipe record. When the function is unavailable, the app falls back to browser storage.
 
-Set `COCKTAIL_ADMIN_PIN` in Netlify to require an in-app admin unlock before anyone can create, edit, or delete live recipes. Reading the folio remains public.
+Set `COCKTAIL_ADMIN_PIN` in Netlify to require an in-app admin unlock before anyone can create, edit, or delete live recipes. Reading the folio remains public. The deployed function also includes a server-side PIN hash fallback so the live site stays locked even if the runtime environment variable is unavailable.
 
 The app still uses square local photo placeholders in `public/images/placeholders/`, selected by base type such as bourbon, rye, gin, wine, rum, tequila, vodka, or mocktail.
