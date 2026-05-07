@@ -63,7 +63,7 @@ function getRecipeStore() {
 function getAdminPin() {
   type NetlifyRuntime = { env?: { get?: (name: string) => string | undefined } };
   const runtime = (globalThis as typeof globalThis & { Netlify?: NetlifyRuntime }).Netlify;
-  return runtime?.env?.get?.('COCKTAIL_ADMIN_PIN')?.trim() || '';
+  return runtime?.env?.get?.('COCKTAIL_ADMIN_PIN')?.trim() || process.env.COCKTAIL_ADMIN_PIN?.trim() || '';
 }
 
 function requireAdminPin(req: Request, adminPin: string) {
