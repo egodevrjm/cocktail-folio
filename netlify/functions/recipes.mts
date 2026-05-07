@@ -1,5 +1,5 @@
 import type { Config, Context } from '@netlify/functions';
-import { getStore } from '@netlify/blobs';
+import { getDeployStore, getStore } from '@netlify/blobs';
 
 const STORE_NAME = 'cocktail-folio-recipes';
 const RECIPE_PREFIX = 'recipes/';
@@ -43,6 +43,12 @@ export const config: Config = {
 };
 
 function getRecipeStore() {
+  type NetlifyRuntime = { context?: { deploy?: { context?: string } } };
+  const runtime = (globalThis as typeof globalThis & { Netlify?: NetlifyRuntime }).Netlify;
+  if (runtime?.context?.deploy?.context && runtime.context.deploy.context !== 'production') {
+    return getDeployStore(STORE_NAME);
+  }
+
   return getStore(STORE_NAME, { consistency: 'strong' });
 }
 
