@@ -27,7 +27,7 @@ import {
   X,
 } from 'lucide-react';
 import { RAW_CSV, enrichCocktail, parseCSV } from './cocktails.js';
-import { deleteLiveRecipe, fetchLiveRecipes, LiveRecipeError, saveLiveRecipe } from './services/liveRecipes.js';
+import { deleteLiveRecipe, fetchLiveRecipes, LiveRecipeError, saveLiveRecipe, verifyLiveAdminPin } from './services/liveRecipes.js';
 import { getCocktailImage } from './services/imageStore.js';
 import { readLocalValue, writeLocalValue } from './services/localStore.js';
 
@@ -94,7 +94,9 @@ export default function App() {
   });
   const [adminPinInput, setAdminPinInput] = useState('');
   const [isAdminOpen, setIsAdminOpen] = useState(false);
+  const [isAdminChecking, setIsAdminChecking] = useState(false);
   const [adminMessage, setAdminMessage] = useState('');
+  const [pendingAdminAction, setPendingAdminAction] = useState(null);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState('All');
@@ -257,6 +259,14 @@ export default function App() {
   const favoriteCount = allCocktails.filter((cocktail) => favorites.includes(cocktail.id)).length;
   const activeSortLabel = SORT_OPTIONS.find((option) => option.value === sortBy)?.label || 'Folio order';
   const liveAdminLocked = cloudStatus === 'cloud' && liveRequiresAdminPin && !adminPin;
+
+  function requireAdminUnlock(message, action = null) {
+    if (!liveAdminLocked) return false;
+
+    setPendingAdminAction(action);
+    openAdminUnlock(message);
+    return true;
+  }
 
   async function handleSaveCocktail(event) {
     event.preventDefault();
@@ -513,6 +523,11 @@ export default function App() {
 
   function openEditCocktail(event, cocktail) {
     event?.stopPropagation();
+    if (requireAdminUnlock('Unlock admin mode to edit recipes.', { type: 'edit', cocktail })) return;
+    openEditForm(cocktail);
+  }
+
+  function openEditForm(cocktail) {
     setSelectedCocktail(null);
     setEditingCocktail(cocktail);
     setNewName(cocktail.Name || '');
@@ -543,27 +558,52 @@ export default function App() {
     setIsCreatorOpen(false);
   }
 
+  function closeAdminUnlock() {
+    setIsAdminOpen(false);
+    setAdminPinInput('');
+    setIsAdminChecking(false);
+    setPendingAdminAction(null);
+  }
+
   function openAdminUnlock(message = 'Enter the admin PIN to manage live recipes.') {
     setAdminMessage(message);
     setAdminPinInput('');
+    setIsAdminChecking(false);
     setIsAdminOpen(true);
   }
 
-  function handleAdminUnlock(event) {
+  async function handleAdminUnlock(event) {
     event.preventDefault();
     const nextPin = adminPinInput.trim();
     if (!nextPin) return;
 
-    setAdminPin(nextPin);
-    setAdminPinInput('');
-    setIsAdminOpen(false);
-    setAdminMessage('');
-    showToast('Admin mode unlocked');
+    setIsAdminChecking(true);
+    try {
+      await verifyLiveAdminPin(nextPin);
+      setAdminPin(nextPin);
+      setAdminPinInput('');
+      setIsAdminOpen(false);
+      setAdminMessage('');
+      if (pendingAdminAction?.type === 'edit' && pendingAdminAction.cocktail) {
+        openEditForm(pendingAdminAction.cocktail);
+      } else if (pendingAdminAction?.type === 'create') {
+        setEditingCocktail(null);
+        setIsCreatorOpen(true);
+      }
+      setPendingAdminAction(null);
+      showToast('Admin mode unlocked');
+    } catch (error) {
+      console.warn('Admin PIN verification failed.', error);
+      setAdminMessage('That PIN did not match. Try again.');
+    } finally {
+      setIsAdminChecking(false);
+    }
   }
 
   function handleAdminLock() {
     setAdminPin('');
     setAdminPinInput('');
+    setPendingAdminAction(null);
     showToast('Admin mode locked');
   }
 
@@ -622,6 +662,7 @@ export default function App() {
             <button
               className="primary-button"
               onClick={() => {
+                if (requireAdminUnlock('Unlock admin mode to create live recipes.', { type: 'create' })) return;
                 setEditingCocktail(null);
                 setIsCreatorOpen(true);
               }}
@@ -1050,7 +1091,7 @@ export default function App() {
                 <h2 id="admin-title">Admin Unlock</h2>
                 <p>{adminMessage || 'Enter the admin PIN to manage live recipes.'}</p>
               </div>
-              <button className="icon-button" onClick={() => setIsAdminOpen(false)} aria-label="Close admin unlock">
+              <button className="icon-button" onClick={closeAdminUnlock} aria-label="Close admin unlock">
                 <X size={20} />
               </button>
             </div>
@@ -1069,12 +1110,12 @@ export default function App() {
                 </div>
               </label>
               <div className="modal-footer">
-                <button type="button" className="ghost-button" onClick={() => setIsAdminOpen(false)}>
+                <button type="button" className="ghost-button" onClick={closeAdminUnlock}>
                   Cancel
                 </button>
-                <button className="primary-button" type="submit" disabled={!adminPinInput.trim()}>
-                  <Unlock size={18} />
-                  <span>Unlock</span>
+                <button className="primary-button" type="submit" disabled={!adminPinInput.trim() || isAdminChecking}>
+                  {isAdminChecking ? <Loader2 className="spin" size={18} /> : <Unlock size={18} />}
+                  <span>{isAdminChecking ? 'Checking' : 'Unlock'}</span>
                 </button>
               </div>
             </form>

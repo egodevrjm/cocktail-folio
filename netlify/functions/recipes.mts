@@ -17,6 +17,12 @@ export default async (req: Request, context: Context) => {
   const adminSecret = getAdminSecret();
 
   if (req.method === 'GET') {
+    if (new URL(req.url).searchParams.get('admin') === 'verify') {
+      const unauthorized = requireAdminPin(req, adminSecret);
+      if (unauthorized) return unauthorized;
+      return jsonResponse(200, { ok: true });
+    }
+
     const recipes = await listRecipes(store);
     return jsonResponse(200, { recipes, requiresAdminPin: Boolean(adminSecret.pin || adminSecret.pinHash) });
   }

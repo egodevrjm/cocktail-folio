@@ -43,6 +43,21 @@ export async function saveLiveRecipe(recipe, adminPin = '') {
   return data.recipe;
 }
 
+export async function verifyLiveAdminPin(adminPin = '') {
+  const response = await fetch(`${RECIPES_API}?admin=verify`, {
+    headers: {
+      Accept: 'application/json',
+      ...(adminPin ? { 'x-cocktail-admin-pin': adminPin } : {}),
+    },
+  });
+
+  if (!response.ok) {
+    throw new LiveRecipeError(`Admin PIN verification failed with status ${response.status}`, response.status);
+  }
+
+  return response.json();
+}
+
 export async function deleteLiveRecipe(id, adminPin = '') {
   const response = await fetch(`${RECIPES_API}?id=${encodeURIComponent(id)}`, {
     method: 'DELETE',
